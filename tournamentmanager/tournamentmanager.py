@@ -28,16 +28,8 @@ class TournamentManager(commands.Cog):
     """
 
     default_guild = {
-        "roles": {
-            "participant": None,
-            "tournament": None,
-            "check": None,
-        },
-        "channels": {
-            "inscription": None,
-            "vip_inscription": None,
-            "check": None,
-        },
+        "roles": {"participant": None, "tournament": None, "check": None,},
+        "channels": {"inscription": None, "vip_inscription": None, "check": None,},
         "blacklisted": [],
         "current": [],
     }
@@ -123,7 +115,7 @@ class TournamentManager(commands.Cog):
             raise UserInputError("Le channel d'inscriptions a été perdu.")
         self.vip_inscription_channels[guild.id] = channel
         return channel
-    
+
     async def get_checkin_channel(self, guild: discord.Guild) -> discord.TextChannel:
         # no cache here too
         channel_id = await self.data.guild(guild).channels.check()
@@ -198,9 +190,7 @@ class TournamentManager(commands.Cog):
         await ctx.send("Channel configuré!")
 
     @tournamentset.command(name="checkin")
-    async def tournamentset_checkin(
-        self, ctx: commands.Context, *, channel: discord.TextChannel
-    ):
+    async def tournamentset_checkin(self, ctx: commands.Context, *, channel: discord.TextChannel):
         """
         Définis le channel de check-in.
         """
@@ -214,9 +204,7 @@ class TournamentManager(commands.Cog):
         await ctx.send("Channel configuré!")
 
     @tournamentset.command(name="checkinrole")
-    async def tournamentset_checkinrole(
-        self, ctx: commands.Context, *, role: discord.Role
-    ):
+    async def tournamentset_checkinrole(self, ctx: commands.Context, *, role: discord.Role):
         """
         Définis le rôle de check-in.
         """
@@ -225,7 +213,48 @@ class TournamentManager(commands.Cog):
             return
         await self.data.guild(ctx.guild).roles.check.set(role.id)
         await ctx.send("Rôle configuré!")
-    
+
+    @tournamentset.command(name="settings")
+    async def tournamentset_settings(self, ctx: commands.Context):
+        """
+        Affiche les réglages enregistrés du module.
+        """
+        guild = ctx.guild
+        roles = await self.data.guild(guild).roles.all()
+        channels = await self.data.guild(guild).channels.all()
+        participants = len(await self.data.guild(guild).current())
+        blacklisted = len(await self.data.guild(guild).blacklisted())
+        roles_description = ""
+        channels_description = ""
+        for key, role_id in roles.items():
+            role = guild.get_role(role_id)
+            if role:
+                roles_description += f"{key}: {role.name} ({role.id})\n"
+            else:
+                roles_description += f"{key}: Non défini\n"
+        for key, channel_id in channels.items():
+            channel = guild.get_channel(channel_id)
+            if channel:
+                channels_description += f"{key}: {channel.mention} ({channel.id})\n"
+            else:
+                channels_description += f"{key}: Non défini\n"
+        embed = discord.Embed()
+        embed.colour = 0xE8C15F
+        embed.description = "Réglages du module de gestion de tournois."
+        embed.add_field(name="Rôles", value=roles_description, inline=False)
+        embed.add_field(name="Channels", value=channels_description, inline=False)
+        embed.add_field(
+            name="Participants", value=f"{participants} membres enregistrés", inline=True
+        )
+        embed.add_field(name="Blacklist", value=f"{participants} membres blacklistés", inline=True)
+        embed.set_footer(
+            text=(
+                f'Taper "{ctx.clean_prefix}help tournamentset" '
+                "pour la liste des commandes de configuration."
+            )
+        )
+        await ctx.send(embed=embed)
+
     @commands.group()
     @checks.admin()
     async def tournamentban(self, ctx: commands.Context):
@@ -252,7 +281,7 @@ class TournamentManager(commands.Cog):
                 await member.remove_roles(role, reason="Membre blacklisté")
                 text += "\nSon rôle de participant a également été retiré."
         await ctx.send(text)
-    
+
     @tournamentban.command(name="remove")
     async def tournamentban_remove(self, ctx: commands.Context, *, member: discord.Member):
         """
@@ -266,7 +295,7 @@ class TournamentManager(commands.Cog):
                 await ctx.send("Le membre n'est pas dans la blacklist.")
             else:
                 await ctx.send("Le membre n'est plus banni.")
-    
+
     @tournamentban.command(name="list")
     async def tournamentban_list(self, ctx: commands.Context):
         """
@@ -342,7 +371,7 @@ class TournamentManager(commands.Cog):
             if not MESSAGE_CHECK.match(message.content):
                 return
             member = message.author
-            #if not NAME_CHECK.match(member.name):
+            # if not NAME_CHECK.match(member.name):
             #    return
             if member.id in blacklist:
                 return
@@ -465,7 +494,9 @@ class TournamentManager(commands.Cog):
         except UserInputError as e:
             await ctx.send(e.args[0])
             return
-        message = await ctx.send(f"Ajouter le rôle de participant ({role.name}) à {total} membres ?")
+        message = await ctx.send(
+            f"Ajouter le rôle de participant ({role.name}) à {total} membres ?"
+        )
         result = await self._ask_for(ctx, message)
         if result is False:
             await ctx.send("Annulation.")
@@ -544,7 +575,9 @@ class TournamentManager(commands.Cog):
             await ctx.send(f"Pas assez de participants trouvés ({len(participants)}/{limit})")
             return
         await self.data.guild(guild).current.set(participants)
-        await ctx.send(f"Inscription terminée, {len(participants)} membres enregistrés. Envoi du fichier...")
+        await ctx.send(
+            f"Inscription terminée, {len(participants)} membres enregistrés. Envoi du fichier..."
+        )
         async with ctx.typing():
             content = "\n".join((str(guild.get_member(x)) for x in participants))
             file = text_to_file(content, "participants.txt")
@@ -560,7 +593,7 @@ class TournamentManager(commands.Cog):
             await ctx.send(f"Votre {name} est valide !")
         else:
             await ctx.send(f"Votre {name} n'est pas valide.")
-    
+
     @commands.command()
     @checks.mod()
     async def startcheck(self, ctx: commands.Context):
@@ -594,14 +627,13 @@ class TournamentManager(commands.Cog):
                     inline=False,
                 )
                 embed.set_field_at(
-                    1,
-                    name="Temps restant",
-                    value=str(start_time),
-                    inline=True,
+                    1, name="Temps restant", value=str(start_time), inline=True,
                 )
                 if fails:
                     if list(embed.fields) > 2:
-                        embed.set_field_at(2, name="Erreurs", value=f"{len(fails)} échecs.", inline=True)
+                        embed.set_field_at(
+                            2, name="Erreurs", value=f"{len(fails)} échecs.", inline=True
+                        )
                     else:
                         embed.add_field(name="Erreurs", value=f"{len(fails)} échecs.", inline=True)
                 await message.edit(embed=embed)
@@ -662,7 +694,7 @@ class TournamentManager(commands.Cog):
                 await cancel()
             else:
                 await ctx.send("L'inscription n'est pas annulée.")
-        
+
         guild = ctx.guild
         try:
             role = await self.get_tournament_role(guild)
@@ -707,6 +739,5 @@ class TournamentManager(commands.Cog):
         await asyncio.sleep(10)
         self.bot.add_listener(on_message)
         update_task = self.bot.loop.create_task(update(message, embed))
-        await channel.set_permissions(
-            role, send_messages=True, reason="Ouverture du check-in"
-        )
+        await channel.set_permissions(role, send_messages=True, reason="Ouverture du check-in")
+
