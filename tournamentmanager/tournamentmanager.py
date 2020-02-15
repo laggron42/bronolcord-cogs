@@ -246,7 +246,7 @@ class TournamentManager(commands.Cog):
         embed.add_field(
             name="Participants", value=f"{participants} membres enregistrés", inline=True
         )
-        embed.add_field(name="Blacklist", value=f"{participants} membres blacklistés", inline=True)
+        embed.add_field(name="Blacklist", value=f"{blacklisted} membres blacklistés", inline=True)
         embed.set_footer(
             text=(
                 f'Taper "{ctx.clean_prefix}help tournamentset" '
@@ -375,6 +375,8 @@ class TournamentManager(commands.Cog):
             #    return
             if member.id in blacklist:
                 return
+            if participant_role in member.roles:
+                return
             async with self.data.guild(guild).current() as participants:
                 if member.id in participants:
                     return
@@ -406,6 +408,7 @@ class TournamentManager(commands.Cog):
         guild = ctx.guild
         try:
             role = await self.get_tournament_role(guild)
+            participant_role = await self.get_participant_role(guild)
             channel = await self.get_channel(guild)
         except UserInputError as e:
             await ctx.send(e.args[0])
@@ -495,7 +498,7 @@ class TournamentManager(commands.Cog):
             await ctx.send(e.args[0])
             return
         message = await ctx.send(
-            f"Ajouter le rôle de participant ({role.name}) à {total} membres ?"
+            f"Ajouter le rôle de participant ({role.name}) à {number} membres ?"
         )
         result = await self._ask_for(ctx, message)
         if result is False:
@@ -519,7 +522,7 @@ class TournamentManager(commands.Cog):
         task = self.bot.loop.create_task(update(message))
         fails = ""
         success = []
-        for member in participants:
+        for member in participants[:number-1]:
             try:
                 await member.add_roles(role, reason="Participation au tournoi.")
                 await member.edit(nickname=None)
@@ -559,6 +562,7 @@ class TournamentManager(commands.Cog):
         if after:
             after = after.created_at
         blacklist = await self.data.guild(guild).blacklisted()
+        await self.data.guild(guild).current.set([])
         async with ctx.typing():
             async for message in channel.history(oldest_first=True, after=after):
                 if not MESSAGE_CHECK.match(message.content):
@@ -582,6 +586,73 @@ class TournamentManager(commands.Cog):
             content = "\n".join((str(guild.get_member(x)) for x in participants))
             file = text_to_file(content, "participants.txt")
             await ctx.send(file=file)
+
+    @commands.command()
+    @checks.mod()
+    async def tinfo(self, ctx: commands.Context):
+        """
+        Affiche diverses informations liées au tournoi.
+        """
+        guild = ctx.guild
+        participants = await self.data.guild(guild).current()
+        blacklisted = await self.data.guild(guild).blacklisted()
+        text = (
+            "__Informations sur le tournoi__\n"
+            f"- Nombre de participants enregistrés : **{len(participants)}**\n"
+            f"- Nombre de membres blacklistés : **{len(blacklisted)}**\n\n"
+            "__Informations sur les roles__\n"
+        )
+        try:
+            tournament_role = await self.get_tournament_role(guild)
+        except UserInputError:
+            pass
+        else:
+            text += (
+                f"- Nombre de membres avec le rôle {tournament_role.name} "
+                f": **{len(tournament_role.members)}**\n"
+            )
+        try:
+            participant_role = await self.get_participant_role(guild)
+        except UserInputError:
+            pass
+        else:
+            text += (
+                f"- Nombre de membres avec le rôle {participant_role.name} "
+                f": **{len(participant_role.members)}**\n"
+            )
+        try:
+            check_role = await self.get_checkin_role(guild)
+        except UserInputError:
+            pass
+        else:
+            text += (
+                f"- Nombre de membres avec le rôle {check_role.name} "
+                f": **{len(check_role.members)}**\n"
+            )
+        await ctx.send(text)
+
+    @commands.command(name="list")
+    @checks.mod()
+    async def _list(self, ctx: commands.Context):
+        """
+        Génère les listes de participants à partir du rôle défini.
+        """
+        guild = ctx.guild
+        try:
+            role = await self.get_participant_role(guild)
+        except UserInputError as e:
+            await ctx.send(e.args[0])
+            return
+        async with ctx.typing():
+            text = "Liste des membres avec le rôle participant:\n\n"
+            for member in role.members:
+                text += str(member) + "\n"
+            text += f"\nNombre de participants : {len(role.members)}"
+            file = text_to_file(text, filename="participants.txt")
+            await ctx.send(
+                f"Liste des {len(role.members)} membres participants.",
+                file=file,
+            )
 
     @commands.command()
     async def namecheck(self, ctx: commands.Context, *, text: str = None):
