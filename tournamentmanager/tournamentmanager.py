@@ -825,7 +825,7 @@ class TournamentManager(commands.Cog):
         )
         checked = []
         fails = []
-        start_time = timedelta(seconds=180)
+        start_time = timedelta(seconds=1800)
         self.bot.add_listener(on_reaction_add)
         await asyncio.sleep(10)
         self.bot.add_listener(on_message)
