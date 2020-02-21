@@ -16,6 +16,7 @@ from redbot.core.utils.chat_formatting import text_to_file, pagify
 
 NAME_CHECK = re.compile(r"^[\w ]{,32}$")
 MESSAGE_CHECK = re.compile(r"^je participe\.?$", flags=re.I)
+CHECKIN_MESSAGE_CHECK = re.compile(r"^!?check\.?$", flags=re.I)
 
 
 class UserInputError(Exception):
@@ -46,8 +47,14 @@ class TournamentManager(commands.Cog):
         self.inscription_channels = {}
         self.vip_inscription_channels = {}
 
-    async def _ask_for(self, ctx: commands.Context, message: discord.Message, timeout: int = 20):
-        pred = ReactionPredicate.yes_or_no(message, ctx.author)
+    async def _ask_for(
+        self,
+        ctx: commands.Context,
+        message: discord.Message,
+        author: discord.User = None,
+        timeout: int = 20,
+    ):
+        pred = ReactionPredicate.yes_or_no(message, author or ctx.author)
         start_adding_reactions(message, ReactionPredicate.YES_OR_NO_EMOJIS)
         try:
             await self.bot.wait_for("reaction_add", check=pred, timeout=timeout)
@@ -307,9 +314,9 @@ class TournamentManager(commands.Cog):
             for member_id in blacklist:
                 member = guild.get_member(member_id)
                 if member:
-                    text += f"- {str(member)} ({member.id})"
+                    text += f"- {str(member)} ({member.id})\n"
                 else:
-                    text += f"- {member_id} (le membre n'est plus sur le serveur)"
+                    text += f"- {member_id} (le membre n'est plus sur le serveur)\n"
         for page in pagify(text):
             await ctx.send(page)
 
@@ -394,11 +401,11 @@ class TournamentManager(commands.Cog):
                 return
             if reaction.emoji != "❌":
                 return
-            member = guild.get_member(user)
-            if not self.bot.is_admin(member):
+            member = guild.get_member(user.id)
+            if not await self.bot.is_admin(member):
                 return
             msg = await ctx.send("Annuler ?")
-            result = await self._ask_for(ctx, msg, 10)
+            result = await self._ask_for(ctx, msg, user, 10)
             if result is True:
                 await cancel()
             else:
@@ -522,7 +529,7 @@ class TournamentManager(commands.Cog):
         task = self.bot.loop.create_task(update(message))
         fails = ""
         success = []
-        for member in participants[:number-1]:
+        for member in participants:
             try:
                 await member.add_roles(role, reason="Participation au tournoi.")
                 await member.edit(nickname=None)
@@ -650,11 +657,10 @@ class TournamentManager(commands.Cog):
             text += f"\nNombre de participants : {len(role.members)}"
             file = text_to_file(text, filename="participants.txt")
             await ctx.send(
-                f"Liste des {len(role.members)} membres participants.",
-                file=file,
+                f"Liste des {len(role.members)} membres participants.", file=file,
             )
 
-    @commands.command()
+    @commands.command(enabled=False)
     async def namecheck(self, ctx: commands.Context, *, text: str = None):
         """
         Vérifie si votre pseudo respecte le règlement.
@@ -710,6 +716,9 @@ class TournamentManager(commands.Cog):
                 await message.edit(embed=embed)
                 await asyncio.sleep(2)
                 start_time -= timedelta(seconds=2)
+                if start_time.seconds <= 0:
+                    # the current function is cancelled when calling cancel(), so we can't use await
+                    self.bot.loop.create_task(cancel())
             await cancel()
 
         async def cancel():
@@ -717,7 +726,7 @@ class TournamentManager(commands.Cog):
             self.bot.remove_listener(on_reaction_add)
             update_task.cancel()
             await channel.set_permissions(
-                role, send_messages=False, reason="Fermeture du check-in"
+                role, read_messages=True, send_messages=False, reason="Fermeture du check-in"
             )
             await channel.send("Fin du check-in.")
             await ctx.send(
@@ -730,14 +739,25 @@ class TournamentManager(commands.Cog):
                     content = "\n".join(f"{str(x)}: {type(e)}: {e.args[0]}" for x, e in fails)
                     files.append(text_to_file(content, "fails.txt"))
                 await ctx.send(files=files)
+            to_blacklist = [x.id for x in participant_role.members if x not in checked]
+            await self.data.guild(guild).blacklisted.set(to_blacklist)
+            await ctx.send(
+                f"La blacklist a été réintialisée, puis les {len(to_blacklist)} n'ayant pas "
+                "check y ont été ajoutés. Ils ne pourront pas participer au prochain tournoi.\n"
+                f"Tapez `{ctx.clean_prefix}tournamentban list` pour voir la blacklist."
+            )
 
         async def on_message(message: discord.Message):
-            nonlocal checked
+            nonlocal checked, update_task
             if message.channel.id != channel.id:
                 return
-            if not MESSAGE_CHECK.match(message.content):
+            if not CHECKIN_MESSAGE_CHECK.match(message.content):
                 return
             member = message.author
+            if participant_role not in member.roles:
+                return
+            if member in checked:
+                return
             try:
                 await member.add_roles(check_role, reason="Check-in tournoi")
             except discord.errors.HTTPException as e:
@@ -756,11 +776,11 @@ class TournamentManager(commands.Cog):
                 return
             if reaction.emoji != "❌":
                 return
-            member = guild.get_member(user)
-            if not self.bot.is_admin(member):
+            member = guild.get_member(user.id)
+            if not await self.bot.is_admin(member):
                 return
             msg = await ctx.send("Annuler ?")
-            result = await self._ask_for(ctx, msg, 10)
+            result = await self._ask_for(ctx, msg, user, 10)
             if result is True:
                 await cancel()
             else:
@@ -805,10 +825,12 @@ class TournamentManager(commands.Cog):
         )
         checked = []
         fails = []
-        start_time = timedelta(seconds=1800)
+        start_time = timedelta(seconds=180)
         self.bot.add_listener(on_reaction_add)
         await asyncio.sleep(10)
         self.bot.add_listener(on_message)
         update_task = self.bot.loop.create_task(update(message, embed))
-        await channel.set_permissions(role, send_messages=True, reason="Ouverture du check-in")
+        await channel.set_permissions(
+            role, read_messages=True, send_messages=True, reason="Ouverture du check-in"
+        )
 
