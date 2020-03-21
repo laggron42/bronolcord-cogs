@@ -4,7 +4,7 @@ import re
 import json
 
 from typing import Optional
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from redbot.core import commands
 from redbot.core import Config
@@ -14,9 +14,9 @@ from redbot.core.utils.menus import start_adding_reactions
 from redbot.core.utils.predicates import ReactionPredicate
 from redbot.core.utils.chat_formatting import text_to_file, pagify
 
-NAME_CHECK = re.compile(r"^[\w ]{,32}$")
+from .progress_menu import UpdateRoles, Inscription, CheckIn
+
 MESSAGE_CHECK = re.compile(r"^je participe\.?$", flags=re.I)
-CHECKIN_MESSAGE_CHECK = re.compile(r"^!?check\.?$", flags=re.I)
 
 
 class UserInputError(Exception):
@@ -45,7 +45,6 @@ class TournamentManager(commands.Cog):
         self.participant_roles = {}
         self.checkin_roles = {}
         self.inscription_channels = {}
-        self.vip_inscription_channels = {}
 
     async def _ask_for(
         self,
@@ -63,25 +62,24 @@ class TournamentManager(commands.Cog):
         return pred.result
 
     async def get_participant_role(self, guild: discord.Guild) -> discord.Role:
-        role = self.participant_roles.get(guild.id)
-        if role:
-            return role
-        role_id = await self.data.guild(guild).roles.participant()
+        role_id = self.participant_roles.get(guild.id)
         if not role_id:
-            raise UserInputError("Le rôle de participant n'est pas réglé.")
+            role_id = await self.data.guild(guild).roles.participant()
+            if not role_id:
+                raise UserInputError("Le rôle de participant n'est pas réglé.")
+            self.participant_roles[guild.id] = role_id
         role = guild.get_role(role_id)
         if not role:
             raise UserInputError("Le rôle de participant a été perdu.")
-        self.participant_roles[guild.id] = role
         return role
 
     async def get_checkin_role(self, guild: discord.Guild) -> discord.Role:
-        role = self.checkin_roles.get(guild.id)
-        if role:
-            return role
-        role_id = await self.data.guild(guild).roles.check()
+        role_id = self.checkin_roles.get(guild.id)
         if not role_id:
-            raise UserInputError("Le rôle de check-in n'est pas réglé.")
+            role_id = await self.data.guild(guild).roles.check()
+            if not role_id:
+                raise UserInputError("Le rôle de check-in n'est pas réglé.")
+            self.checkin_roles[guild.id] = role_id
         role = guild.get_role(role_id)
         if not role:
             raise UserInputError("Le rôle de check-in a été perdu.")
@@ -98,29 +96,15 @@ class TournamentManager(commands.Cog):
         return role
 
     async def get_channel(self, guild: discord.Guild) -> discord.TextChannel:
-        channel = self.inscription_channels.get(guild.id)
-        if channel:
-            return channel
-        channel_id = await self.data.guild(guild).channels.inscription()
+        channel_id = self.inscription_channels.get(guild.id)
         if not channel_id:
-            raise UserInputError("Le channel d'inscriptions n'est pas réglé.")
+            channel_id = await self.data.guild(guild).channels.inscription()
+            if not channel_id:
+                raise UserInputError("Le channel d'inscriptions n'est pas réglé.")
+            self.inscription_channels[guild.id] = channel_id
         channel = guild.get_channel(channel_id)
         if not channel:
             raise UserInputError("Le channel d'inscriptions a été perdu.")
-        self.inscription_channels[guild.id] = channel
-        return channel
-
-    async def get_vip_channel(self, guild: discord.Guild) -> discord.TextChannel:
-        channel = self.vip_inscription_channels.get(guild.id)
-        if channel:
-            return channel
-        channel_id = await self.data.guild(guild).channels.vip_inscription()
-        if not channel_id:
-            raise UserInputError("Le channel d'inscriptions n'est pas réglé.")
-        channel = guild.get_channel(channel_id)
-        if not channel:
-            raise UserInputError("Le channel d'inscriptions a été perdu.")
-        self.vip_inscription_channels[guild.id] = channel
         return channel
 
     async def get_checkin_channel(self, guild: discord.Guild) -> discord.TextChannel:
@@ -178,22 +162,6 @@ class TournamentManager(commands.Cog):
             )
             return
         await self.data.guild(ctx.guild).channels.inscription.set(channel.id)
-        await ctx.send("Channel configuré!")
-
-    @tournamentset.command(name="inscriptionvip")
-    async def tournamentset_inscriptionvip(
-        self, ctx: commands.Context, *, channel: discord.TextChannel
-    ):
-        """
-        Définis le channel d'insciptions VIP.
-        """
-        overwrite = channel.permissions_for(ctx.guild.me)
-        if overwrite.read_messages is False or overwrite.manage_channels is False:
-            await ctx.send(
-                "J'ai besoin de la permission de lire les messages et d'éditer ce channel."
-            )
-            return
-        await self.data.guild(ctx.guild).channels.vip_inscription.set(channel.id)
         await ctx.send("Channel configuré!")
 
     @tournamentset.command(name="checkin")
@@ -297,7 +265,7 @@ class TournamentManager(commands.Cog):
         guild = ctx.guild
         async with self.data.guild(guild).blacklisted() as blacklist:
             try:
-                del blacklist[member.id]
+                blacklist.remove(member.id)
             except KeyError:
                 await ctx.send("Le membre n'est pas dans la blacklist.")
             else:
@@ -320,6 +288,15 @@ class TournamentManager(commands.Cog):
         for page in pagify(text):
             await ctx.send(page)
 
+    @tournamentban.command(name="clear")
+    async def tournamentban_clear(self, ctx: commands.Context):
+        """
+        Nettoie la liste des membres bannis.
+        """
+        guild = ctx.guild
+        await self.data.guild(guild).blacklisted.set([])
+        await ctx.send("La blacklist a été réinitialisée.")
+
     @commands.command()
     @checks.mod()
     @commands.guild_only()
@@ -327,91 +304,6 @@ class TournamentManager(commands.Cog):
         """
         Lance l'inscription pour le tournoi avec la limite de participants donnée.
         """
-
-        async def update(message: discord.Message, embed: discord.Embed):
-            while True:
-                # https://github.com/Cog-Creators/Red-DiscordBot/blob/V3/develop/redbot/cogs/audio/audio.py#L3920
-                sections = 20
-                progress = round((current / limit) * sections)
-                bar = "="
-                seek = ">"
-                empty = " "
-                text = ""
-                for i in range(sections):
-                    if i < progress:
-                        text += bar
-                    elif i == progress:
-                        text += seek
-                    else:
-                        text += empty
-                percent = round(current / limit * 100, 2)
-                embed.set_field_at(
-                    0,
-                    name="Progression",
-                    value=f"`[{text}]`\n{current}/{limit} ({percent}%) participants inscrits",
-                    inline=False,
-                )
-                await message.edit(embed=embed)
-                await asyncio.sleep(0.5)
-
-        async def cancel():
-            self.bot.remove_listener(on_message)
-            self.bot.remove_listener(on_reaction_add)
-            update_task.cancel()
-            await channel.set_permissions(
-                role, send_messages=False, read_messages=True, reason="Fermeture des inscriptions"
-            )
-            await channel.send("Fin des inscriptions.")
-            await ctx.send(
-                f"Inscription terminée, {current} membres enregistrés. Envoi du fichier..."
-            )
-            async with ctx.typing():
-                participants = await self.data.guild(guild).current()
-                content = "\n".join((str(guild.get_member(x)) for x in participants))
-                file = text_to_file(content, "participants.txt")
-                await ctx.send(file=file)
-
-        async def on_message(message: discord.Message):
-            nonlocal current
-            if message.channel.id != channel.id:
-                return
-            if not MESSAGE_CHECK.match(message.content):
-                return
-            member = message.author
-            # if not NAME_CHECK.match(member.name):
-            #    return
-            if member.id in blacklist:
-                return
-            if participant_role in member.roles:
-                return
-            async with self.data.guild(guild).current() as participants:
-                if member.id in participants:
-                    return
-                participants.append(member.id)
-            current += 1
-            if current >= limit:
-                self.bot.loop.create_task(cancel())
-            try:
-                await message.add_reaction("✅")
-            except Exception:
-                pass
-
-        async def on_reaction_add(reaction: discord.Reaction, user: discord.User):
-            if reaction.message.id != message.id:
-                return
-            if reaction.emoji != "❌":
-                return
-            member = guild.get_member(user.id)
-            if not await self.bot.is_admin(member):
-                return
-            msg = await ctx.send("Annuler ?")
-            result = await self._ask_for(ctx, msg, user, 10)
-            if result is True:
-                await cancel()
-            else:
-                await ctx.send("L'inscription n'est pas annulée.")
-
-        current = 0
         guild = ctx.guild
         try:
             role = await self.get_tournament_role(guild)
@@ -433,28 +325,11 @@ class TournamentManager(commands.Cog):
                 return
             await message.delete()
         await self.data.guild(guild).current.set([])
-        embed = discord.Embed(title="Inscription")
-        embed.description = f"L'inscription est en cours dans le channel {channel.mention}"
-        embed.add_field(name="Progression", value="Démarrage dans 10 secondes.", inline=False)
-        embed.set_footer(text="Cliquez sur ❌ pour annuler l'inscription.")
-        embed.colour = 0x00FF33
         blacklist = await self.data.guild(guild).blacklisted()
-        message = await ctx.send(embed=embed)
-        await message.add_reaction("❌")
-        await channel.send(
-            "__Inscription pour le prochain tournoi__\n\n"
-            "- Envoyez `Je participe` dans ce channel pour s'inscrire\n"
-            "- Éditer le message ne marche pas\n"
-            "- Si vous pensez qu'il y a eu un problème, contactez un PK Thunder\n\n"
-            "Ouverture dans 10 secondes."
+        n = Inscription(
+            self.bot, self.data, ctx, limit, channel, role, participant_role, blacklist
         )
-        self.bot.add_listener(on_reaction_add)
-        await asyncio.sleep(10)
-        self.bot.add_listener(on_message)
-        update_task = self.bot.loop.create_task(update(message, embed))
-        await channel.set_permissions(
-            role, send_messages=True, read_messages=True, reason="Ouverture des inscriptions"
-        )
+        await n.run()
 
     @commands.command()
     @checks.mod()
@@ -462,34 +337,6 @@ class TournamentManager(commands.Cog):
         """
         Valide un certain nombre de membres pour l'inscription.
         """
-
-        async def update(message: discord.Message):
-            await asyncio.sleep(1)
-            while True:
-                # https://github.com/Cog-Creators/Red-DiscordBot/blob/V3/develop/redbot/cogs/audio/audio.py#L3920
-                sections = 30
-                progress = round((done / number) * sections)
-                bar = "="
-                seek = ">"
-                empty = " "
-                text = ""
-                for i in range(sections):
-                    if i < progress:
-                        text += bar
-                    elif i == progress:
-                        text += seek
-                    else:
-                        text += empty
-                percent = round(done / number * 100, 2)
-                await message.edit(
-                    content=(
-                        f"Ajout des rôles. Temps estimé: {eta*10} secondes.\n"
-                        f"Effectué : {done}/{number} ({percent}%)\n"
-                        f"`[{text}]`"
-                    )
-                )
-                await asyncio.sleep(5)
-
         guild = ctx.guild
         participants = await self.data.guild(guild).current()
         participants = list(filter(None, [guild.get_member(x) for x in participants]))
@@ -511,38 +358,8 @@ class TournamentManager(commands.Cog):
         if result is False:
             await ctx.send("Annulation.")
             return
-        try:
-            role = await self.get_participant_role(guild)
-        except UserInputError as e:
-            await ctx.send(e.args[0])
-            return
-        done = 0
-        if number < 11:
-            eta = 1
-        else:
-            eta = (number // 10) * 10
-        await ctx.send("Envoi de la liste...")
-        content = [{"id": x.id, "tag": str(x)} for x in participants]
-        file = text_to_file(json.dumps(content), filename="inscriptions.json")
-        await ctx.send(file=file)
-        message = await ctx.send(f"Ajout des rôles. Temps estimé: {eta} secondes.")
-        task = self.bot.loop.create_task(update(message))
-        fails = ""
-        success = []
-        for member in participants:
-            try:
-                await member.add_roles(role, reason="Participation au tournoi.")
-                await member.edit(nickname=None)
-            except discord.errors.HTTPException as e:
-                fails += f"{member.id} ({member.name}): {type(e)} {e.args[0]}\n"
-            else:
-                done += 1
-                success.append(member)
-        files = [text_to_file("\n".join([x.name for x in success]), filename="participants.txt")]
-        if fails:
-            files.append(text_to_file(fails, filename="echecs.txt"))
-        task.cancel()
-        await ctx.send(f"Terminé! {done}/{number} membres mis à jour.", files=files)
+        n = UpdateRoles(self.bot, ctx, participants[:number], [role], "Participation au tournoi.")
+        await n.run()
 
     @commands.command()
     @checks.mod()
@@ -575,8 +392,6 @@ class TournamentManager(commands.Cog):
                 if not MESSAGE_CHECK.match(message.content):
                     return
                 member = message.author
-                if not NAME_CHECK.match(member.name):
-                    return
                 if member.id in blacklist:
                     return
                 participants.append(member)
@@ -660,135 +475,14 @@ class TournamentManager(commands.Cog):
                 f"Liste des {len(role.members)} membres participants.", file=file,
             )
 
-    @commands.command(enabled=False)
-    async def namecheck(self, ctx: commands.Context, *, text: str = None):
-        """
-        Vérifie si votre pseudo respecte le règlement.
-        """
-        name = "texte" if text else "pseudo"
-        if NAME_CHECK.match(text or ctx.author.name):
-            await ctx.send(f"Votre {name} est valide !")
-        else:
-            await ctx.send(f"Votre {name} n'est pas valide.")
-
     @commands.command()
     @checks.mod()
     async def startcheck(self, ctx: commands.Context):
         """
         Démarre la phase de check pendant 30 minutes.
         """
-
-        async def update(message: discord.Message, embed: discord.Embed):
-            nonlocal start_time
-            while True:
-                current = len(checked)
-                # https://github.com/Cog-Creators/Red-DiscordBot/blob/V3/develop/redbot/cogs/audio/audio.py#L3920
-                sections = 20
-                progress = round((current / total) * sections)
-                bar = "="
-                seek = ">"
-                empty = " "
-                text = ""
-                for i in range(sections):
-                    if i < progress:
-                        text += bar
-                    elif i == progress:
-                        text += seek
-                    else:
-                        text += empty
-                percent = round(current / total * 100, 2)
-                embed.set_field_at(
-                    0,
-                    name="Progression",
-                    value=f"`[{text}]`\n{current}/{total} ({percent}%) participants check",
-                    inline=False,
-                )
-                embed.set_field_at(
-                    1, name="Temps restant", value=str(start_time), inline=True,
-                )
-                if fails:
-                    if list(embed.fields) > 2:
-                        embed.set_field_at(
-                            2, name="Erreurs", value=f"{len(fails)} échecs.", inline=True
-                        )
-                    else:
-                        embed.add_field(name="Erreurs", value=f"{len(fails)} échecs.", inline=True)
-                await message.edit(embed=embed)
-                await asyncio.sleep(2)
-                start_time -= timedelta(seconds=2)
-                if start_time.seconds <= 0:
-                    # the current function is cancelled when calling cancel(), so we can't use await
-                    self.bot.loop.create_task(cancel())
-            await cancel()
-
-        async def cancel():
-            self.bot.remove_listener(on_message)
-            self.bot.remove_listener(on_reaction_add)
-            update_task.cancel()
-            await channel.set_permissions(
-                role, read_messages=True, send_messages=False, reason="Fermeture du check-in"
-            )
-            await channel.send("Fin du check-in.")
-            await ctx.send(
-                f"Check-in terminé, {len(checked)} membres enregistrés. Envoi du fichier..."
-            )
-            async with ctx.typing():
-                content = "\n".join((str(x) for x in checked))
-                files = [text_to_file(content, "participants.txt")]
-                if fails:
-                    content = "\n".join(f"{str(x)}: {type(e)}: {e.args[0]}" for x, e in fails)
-                    files.append(text_to_file(content, "fails.txt"))
-                await ctx.send(files=files)
-            to_blacklist = [x.id for x in participant_role.members if x not in checked]
-            await self.data.guild(guild).blacklisted.set(to_blacklist)
-            await ctx.send(
-                f"La blacklist a été réintialisée, puis les {len(to_blacklist)} n'ayant pas "
-                "check y ont été ajoutés. Ils ne pourront pas participer au prochain tournoi.\n"
-                f"Tapez `{ctx.clean_prefix}tournamentban list` pour voir la blacklist."
-            )
-
-        async def on_message(message: discord.Message):
-            nonlocal checked, update_task
-            if message.channel.id != channel.id:
-                return
-            if not CHECKIN_MESSAGE_CHECK.match(message.content):
-                return
-            member = message.author
-            if participant_role not in member.roles:
-                return
-            if member in checked:
-                return
-            try:
-                await member.add_roles(check_role, reason="Check-in tournoi")
-            except discord.errors.HTTPException as e:
-                fails.append((member, e))
-                return
-            checked.append(member)
-            if len(checked) >= total:
-                self.bot.loop.create_task(cancel())
-            try:
-                await message.add_reaction("✅")
-            except Exception:
-                pass
-
-        async def on_reaction_add(reaction: discord.Reaction, user: discord.User):
-            if reaction.message.id != message.id:
-                return
-            if reaction.emoji != "❌":
-                return
-            member = guild.get_member(user.id)
-            if not await self.bot.is_admin(member):
-                return
-            msg = await ctx.send("Annuler ?")
-            result = await self._ask_for(ctx, msg, user, 10)
-            if result is True:
-                await cancel()
-            else:
-                await ctx.send("L'inscription n'est pas annulée.")
-
         guild = ctx.guild
         try:
-            role = await self.get_tournament_role(guild)
             check_role = await self.get_checkin_role(guild)
             participant_role = await self.get_participant_role(guild)
             channel = await self.get_checkin_channel(guild)
@@ -808,29 +502,26 @@ class TournamentManager(commands.Cog):
                 await ctx.send("Annulation.")
                 return
             await message.delete()
-        embed = discord.Embed(title="Check-in")
-        embed.description = f"Le check-in est en cours dans le channel {channel.mention}"
-        embed.add_field(name="Progression", value="Démarrage dans 10 secondes.", inline=False)
-        embed.add_field(name="Temps restant", value="0:30:00", inline=False)
-        embed.set_footer(text="Cliquez sur ❌ pour annuler l'inscription.")
-        embed.colour = 0x0033FF
-        message = await ctx.send(embed=embed)
-        await message.add_reaction("❌")
-        await channel.send(
-            "__Check pour le prochain tournoi__\n\n"
-            "- Envoyez `check` dans ce channel pour confirmer l'inscription\n"
-            "- Éditer le message ne marche pas\n"
-            "- Si vous pensez qu'il y a eu un problème, contactez un PK Thunder\n\n"
-            "Ouverture dans 10 secondes."
-        )
-        checked = []
-        fails = []
-        start_time = timedelta(seconds=1800)
-        self.bot.add_listener(on_reaction_add)
-        await asyncio.sleep(10)
-        self.bot.add_listener(on_message)
-        update_task = self.bot.loop.create_task(update(message, embed))
-        await channel.set_permissions(
-            role, read_messages=True, send_messages=True, reason="Ouverture du check-in"
-        )
-
+        n = CheckIn(self.bot, self.data, ctx, channel, check_role, participant_role)
+        await n.run()
+        # update_message_task is started and running at this point
+        # once it ends, check-in is completed, we can perform role updates
+        try:
+            await n.update_message_task
+        except asyncio.CancelledError:
+            pass  # d.py catches CancelledError
+        try:
+            await n.cancel_task
+        except asyncio.CancelledError:
+            pass
+        if n.to_blacklist:
+            await ctx.send("Retrait des rôles aux membres non check.")
+            n = UpdateRoles(
+                self.bot,
+                ctx,
+                list(filter(None, [guild.get_member(x) for x in n.to_blacklist])),
+                [check_role, participant_role],
+                "Membre non check",
+                False,
+            )
+            await n.run()
