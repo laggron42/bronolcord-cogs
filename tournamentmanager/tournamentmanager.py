@@ -2,6 +2,7 @@ import discord
 import asyncio
 import re
 import json
+import logging
 
 from typing import Optional
 from datetime import datetime, timedelta
@@ -17,6 +18,7 @@ from redbot.core.utils.chat_formatting import text_to_file, pagify
 from .progress_menu import UpdateRoles, Inscription, CheckIn
 
 MESSAGE_CHECK = re.compile(r"^je participe\.?$", flags=re.I)
+log = logging.getLogger("red.laggron.tournamentmanager")
 
 
 class UserInputError(Exception):
@@ -30,7 +32,8 @@ class TournamentManager(commands.Cog):
 
     default_guild = {
         "roles": {"participant": None, "tournament": None, "check": None,},
-        "channels": {"inscription": None, "vip_inscription": None, "check": None,},
+        "channels": {"inscription": None, "check": None,},
+        "next_to_blacklist": [],  # members who didn't check, will be blacklisted at the end
         "blacklisted": [],
         "current": [],
     }
@@ -490,6 +493,9 @@ class TournamentManager(commands.Cog):
             await ctx.send(e.args[0])
             return
         total = len(participant_role.members)
+        if total < 1:
+            await ctx.send(f"Aucun membre n'a le rôle {participant_role.name} !")
+            return
         if not ctx.assume_yes:
             message = await ctx.send(
                 f"Channel de check-in: {channel.mention}\n"
@@ -504,24 +510,84 @@ class TournamentManager(commands.Cog):
             await message.delete()
         n = CheckIn(self.bot, self.data, ctx, channel, check_role, participant_role)
         await n.run()
-        # update_message_task is started and running at this point
-        # once it ends, check-in is completed, we can perform role updates
         try:
             await n.update_message_task
         except asyncio.CancelledError:
-            pass  # d.py catches CancelledError
+            pass
         try:
             await n.cancel_task
         except asyncio.CancelledError:
             pass
-        if n.to_blacklist:
-            await ctx.send("Retrait des rôles aux membres non check.")
-            n = UpdateRoles(
-                self.bot,
-                ctx,
-                list(filter(None, [guild.get_member(x) for x in n.to_blacklist])),
-                [check_role, participant_role],
-                "Membre non check",
-                False,
+        await asyncio.sleep(1)
+        await ctx.send(f"Retrait du rôle {participant_role.name} aux membres non checks...")
+        n = UpdateRoles(
+            self.bot, ctx, n.to_blacklist, [participant_role], "Membre non check", add_roles=False
+        )
+        await n.run()
+
+    @commands.command()
+    @checks.mod()
+    async def endtournament(self, ctx: commands.Context):
+        """
+        Met fin au tournoi actuel.
+        
+        Cette commande fait les actions suivantes :
+        - Retrait des rôles de participants et de check à tous les membres
+        - Réinitialisation de la blacklist
+        - Ajout des membres non checks (qui ne se sont pas inscrits entre temps) à la blacklist
+        """
+        guild = ctx.guild
+        try:
+            check_role = await self.get_checkin_role(guild)
+            participant_role = await self.get_participant_role(guild)
+        except UserInputError as e:
+            await ctx.send(e.args[0])
+            return
+        next_to_blacklist = await self.data.guild(guild).next_to_blacklist()
+        if not ctx.assume_yes:
+            message = await ctx.send(
+                "Cette commande va exécuter les actions suivantes :\n"
+                f'- Retrait des rôles "{participant_role.name}" et "{check_role.name}" à tous '
+                f"les membres ({len(participant_role.members)} membres)\n"
+                "- Réinitialisation de la blacklist\n"
+                f"- Ajout des {len(next_to_blacklist)} membres n'ayant pas check et ne s'étant "
+                "pas inscrit entre temps à la blacklist\n\n"
+                "Continuer ?"
             )
-            await n.run()
+            result = await self._ask_for(ctx, message)
+            if result is False:
+                await ctx.send("Annulation...")
+                return
+            await message.delete()
+        members = check_role.members.copy()
+        members.extend(x for x in participant_role.members if x not in check_role.members)
+        n = UpdateRoles(
+            self.bot,
+            ctx,
+            members,
+            [check_role, participant_role],
+            reason="Fin du tournoi",
+            add_roles=False,
+        )
+        await n.run()
+        try:
+            await n.update_message_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await n.cancel_task
+        except asyncio.CancelledError:
+            pass
+        await self.data.guild(guild).blacklisted.set(next_to_blacklist)
+        await self.data.guild(guild).next_to_blacklist.set([])
+        text = "Blacklist réinitialisée.\n"
+        if next_to_blacklist:
+            if len(next_to_blacklist) == 1:
+                text += "Le membre n'ayant pas check a été ajouté à la blacklist.\n"
+            else:
+                text += (
+                    f"Les {len(next_to_blacklist)} membres n'ayant pas "
+                    "check ont été ajoutés à la blacklist.\n"
+                )
+            text += f"Tapez `{ctx.clean_prefix}tournamentban list` pour voir la blacklist."
+        await ctx.send(text)

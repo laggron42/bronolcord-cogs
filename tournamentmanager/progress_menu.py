@@ -1,6 +1,7 @@
 import discord
 import asyncio
 import re
+import logging
 
 from datetime import datetime, timedelta
 
@@ -13,6 +14,7 @@ from redbot.core.utils.chat_formatting import text_to_file, pagify, humanize_lis
 
 MESSAGE_CHECK = re.compile(r"^je participe\.?$", flags=re.I)
 CHECKIN_MESSAGE_CHECK = re.compile(r"^!?check\.?$", flags=re.I)
+log = logging.getLogger("red.laggron.tournamentmanager")
 
 
 class ProgressionMenu:
@@ -27,9 +29,9 @@ class ProgressionMenu:
         embed: discord.Embed,
         limit: int,
         text: str = None,
-        interval: float = 0.5,
+        interval: float = 1,
         wait_before_start: int = 0,
-        time: datetime = None,
+        time: int = None,
     ):
         self.bot = bot
         self.ctx = ctx
@@ -44,6 +46,8 @@ class ProgressionMenu:
         self.message: discord.Message
         self.update_message_task: asyncio.Task
         self.cancel_task: asyncio.Task
+        self.time_task: asyncio.Task
+        self.end_time: datetime
 
     async def edit_message_loop(self):
         while True:
@@ -52,7 +56,6 @@ class ProgressionMenu:
 
     async def edit_message(self):
         # https://github.com/Cog-Creators/Red-DiscordBot/blob/V3/develop/redbot/cogs/audio/audio.py#L3920
-        print("begin edit")
         sections = 40
         progress = round((self.current / self.limit) * sections)
         bar = "="
@@ -75,10 +78,19 @@ class ProgressionMenu:
         )
         if self.time:
             self.embed.set_field_at(
-                1, name="Progression", value=str(self.time - datetime.now()), inline=False,
+                1,
+                name="Temps restant",
+                value=str(self.end_time - datetime.now().replace(microsecond=0)),
+                inline=False,
             )
-
         await self.message.edit(embed=self.embed)
+
+    async def check_for_time_loop(self):
+        while True:
+            if self.end_time <= datetime.now():
+                self.cancel_task = self.bot.loop.create_task(self.cancel())
+                return
+            await asyncio.sleep(self.interval)
 
     async def task(self):
         raise NotImplementedError
@@ -114,6 +126,8 @@ class ProgressionMenu:
         self.finished = True
         self.bot.remove_listener(self.on_reaction_add)
         self.update_message_task.cancel()
+        if self.time:
+            self.time_task.cancel()
         # update one last time for a clean 100%
         await self.edit_message()
 
@@ -132,6 +146,9 @@ class ProgressionMenu:
         await asyncio.sleep(self.wait_before_start)
         self.finished = False
         self.update_message_task = self.bot.loop.create_task(self.edit_message_loop())
+        if self.time:
+            self.end_time = datetime.now().replace(microsecond=0) + timedelta(seconds=self.time)
+            self.time_task = self.bot.loop.create_task(self.check_for_time_loop())
 
     async def run(self):
         await self._run()
@@ -152,18 +169,25 @@ class UpdateRoles(ProgressionMenu):
         reason: str,
         add_roles: bool = True,
     ):
-        embed = discord.Embed(title="Ajout des rôles")
+        action = "Ajout" if add_roles else "Retrait"
+        embed = discord.Embed(title=f"{action} des rôles")
         if len(members) < 11:
             eta = 1
         else:
             eta = (len(members) // 10) * 10
-        if len(roles) > 1:
-            text = "des rôles " + humanize_list([x.name for x in roles])
+        if len(roles) == 1:
+            roles_text = roles[0].name
+        elif len(roles) == 2:
+            roles_text = " et ".join([x.name for x in roles])
         else:
-            text = "du rôle " + roles[0].name
+            roles_text = ", ".join([x.name for x in roles][:-1])
+            roles_text += " et " + roles[-1].name
+        if len(roles) > 1:
+            text = "des rôles " + roles_text
+        else:
+            text = "du rôle " + roles_text
         embed.description = (
-            f"{'Ajout' if add_roles else 'Retrait'} {text} à {len(members)} membres...\n"
-            f"Temps estimé : {eta} secondes"
+            f"{action} {text} à {len(members)} membres...\n" f"Temps estimé : {eta} secondes"
         )
         embed.add_field(name="Progression", value="Démarrage...", inline=False)
         super().__init__(bot=bot, ctx=ctx, embed=embed, limit=len(members), text="rôles ajoutés")
@@ -281,14 +305,24 @@ class Inscription(ProgressionMenu):
             self.role, send_messages=False, read_messages=True, reason="Fermeture des inscriptions"
         )
         await self.channel.send("Fin des inscriptions.")
-        await self.ctx.send(
-            f"Inscription terminée, {self.current} membres enregistrés. Envoi du fichier..."
+        participants = await self.data.guild(self.ctx.guild).current()
+        next_to_blacklist = await self.data.guild(self.ctx.guild).next_to_blacklist()
+        await self.data.guild(self.ctx.guild).next_to_blacklist.set(
+            [x for x in next_to_blacklist if x not in participants]
         )
-        async with self.ctx.typing():
-            participants = await self.data.guild(self.ctx.guild).current()
-            content = "\n".join((str(self.ctx.guild.get_member(x)) for x in participants))
-            file = text_to_file(content, "participants.txt")
-            await self.ctx.send(file=file)
+        try:
+            async with self.ctx.typing():
+                content = "\n".join((str(self.ctx.guild.get_member(x)) for x in participants))
+                file = text_to_file(content, "participants.txt")
+                await self.ctx.send(
+                    f"Inscription terminée, {self.current} membres enregistrés.", file=file,
+                )
+        except Exception as e:
+            log.error("Erreur dans l'envoi d'un fichier après inscription", exc_info=e)
+            await self.ctx.send(
+                f"Inscription terminée, {self.current} membres enregistrés.\n"
+                "Il y a eu une erreur lors de l'envoi du fichier."
+            )
 
 
 class CheckIn(ProgressionMenu):
@@ -318,7 +352,7 @@ class CheckIn(ProgressionMenu):
             len(participant_role.members),
             "joueurs check",
             wait_before_start=10,
-            time=datetime.now() + timedelta(seconds=1800),
+            time=30,
         )
         self.data = data
         self.channel = channel
@@ -383,20 +417,30 @@ class CheckIn(ProgressionMenu):
             reason="Fermeture du check-in",
         )
         await self.channel.send("Fin du check-in.")
-        await self.ctx.send(
-            f"Check-in terminé, {len(self.checked)} membres enregistrés. Envoi du fichier..."
-        )
-        async with self.ctx.typing():
-            content = "\n".join((str(x) for x in self.checked))
-            files = [text_to_file(content, "participants.txt")]
-            if self.failed:
-                content = "\n".join(f"{str(x)}: {type(e)}: {e.args[0]}" for x, e in self.failed)
-                files.append(text_to_file(content, "fails.txt"))
-            await self.ctx.send(files=files)
-        self.to_blacklist = [x.id for x in self.participant_role.members if x not in self.checked]
-        await self.data.guild(self.ctx.guild).blacklisted.set(self.to_blacklist)
-        await self.ctx.send(
-            f"La blacklist a été réintialisée, puis les {len(self.to_blacklist)} n'ayant pas "
-            "check y ont été ajoutés. Ils ne pourront pas participer au prochain tournoi.\n"
-            f"Tapez `{self.ctx.clean_prefix}tournamentban list` pour voir la blacklist."
+        try:
+            async with self.ctx.typing():
+                content = "\n".join((str(x) for x in self.checked))
+                files = [text_to_file(content, "participants.txt")]
+                if self.failed:
+                    content = "\n".join(
+                        f"{str(x)}: {type(e)}: {e.args[0]}" for x, e in self.failed
+                    )
+                    files.append(text_to_file(content, "fails.txt"))
+                await self.ctx.send(
+                    f"Check-in terminé, {len(self.checked)}/{len(self.participant_role.members)} "
+                    f"membres enregistrés.\nN'oubliez pas de taper `{self.ctx.clean_prefix}"
+                    "endtournament` à la fin du tournoi pour tout compléter.",
+                    files=files,
+                )
+        except Exception as e:
+            log.error("Erreur dans l'envoi d'un fichier après check-in", exc_info=e)
+            await self.ctx.send(
+                f"Check-in terminé, {len(self.checked)}/{len(self.participant_role.members)} "
+                "membres enregistrés. Il y a eu une erreur lors de l'envoi du fichier.\nN'oubliez "
+                f"pas de taper `{self.ctx.clean_prefix}endtournament` à la "
+                "fin du tournoi pour tout compléter."
+            )
+        self.to_blacklist = [x for x in self.participant_role.members if x not in self.checked]
+        await self.data.guild(self.ctx.guild).next_to_blacklist.set(
+            [x.id for x in self.to_blacklist]
         )
