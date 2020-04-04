@@ -294,7 +294,7 @@ class Inscription(ProgressionMenu):
             "__Inscription pour le prochain tournoi__\n\n"
             "- Envoyez `Je participe` dans ce channel pour s'inscrire\n"
             "- Éditer le message ne marche pas\n"
-            "- Si vous pensez qu'il y a eu un problème, contactez un PK Thunder\n\n"
+            "- Si vous pensez qu'il y a eu un problème, contactez @red#2138 ou @YG | Dark shark#3416 , \n\n"
             "Ouverture dans 10 secondes."
         )
 
