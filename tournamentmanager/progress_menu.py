@@ -277,7 +277,8 @@ class Inscription(ProgressionMenu):
         self.current += 1
         if self.current >= self.limit:
             self.finished = True
-            self.cancel_task = self.bot.loop.create_task(self.cancel())
+            if not hasattr(self, "cancel_task"):
+                self.cancel_task = self.bot.loop.create_task(self.cancel())
         try:
             await message.add_reaction("✅")
         except Exception:
