@@ -277,7 +277,8 @@ class Inscription(ProgressionMenu):
         self.current += 1
         if self.current >= self.limit:
             self.finished = True
-            self.cancel_task = self.bot.loop.create_task(self.cancel())
+            if not hasattr(self, "cancel_task"):
+                self.cancel_task = self.bot.loop.create_task(self.cancel())
         try:
             await message.add_reaction("✅")
         except Exception:
@@ -294,7 +295,7 @@ class Inscription(ProgressionMenu):
             "__Inscription pour le prochain tournoi__\n\n"
             "- Envoyez `Je participe` dans ce channel pour s'inscrire\n"
             "- Éditer le message ne marche pas\n"
-            "- Si vous pensez qu'il y a eu un problème, contactez @red#2138 ou @YG | Dark shark#3416 , \n\n"
+            "- Si vous pensez qu'il y a eu un problème, contactez un PK Thunder\n\n"
             "Ouverture dans 10 secondes."
         )
 
@@ -338,11 +339,12 @@ class CheckIn(ProgressionMenu):
         channel: discord.TextChannel,
         checkin_role: discord.Role,
         participant_role: discord.Role,
+        check_time,
     ):
         embed = discord.Embed(title="Check-in")
         embed.description = f"Le check-in est en cours dans le channel {channel.mention}"
         embed.add_field(name="Progression", value="Démarrage dans 10 secondes.", inline=False)
-        embed.add_field(name="Temps restant", value="0:30:00", inline=False)
+        embed.add_field(name="Temps restant", value="{0}m".format(check_time / 60), inline=False)
         embed.set_footer(text="Cliquez sur ❌ pour annuler l'inscription.")
         embed.colour = 0x0033FF
         super().__init__(
@@ -352,7 +354,7 @@ class CheckIn(ProgressionMenu):
             len(participant_role.members),
             "joueurs check",
             wait_before_start=10,
-            time=30,
+            time=check_time,
         )
         self.data = data
         self.channel = channel

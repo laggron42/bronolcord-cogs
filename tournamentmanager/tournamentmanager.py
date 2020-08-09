@@ -36,6 +36,7 @@ class TournamentManager(commands.Cog):
         "next_to_blacklist": [],  # members who didn't check, will be blacklisted at the end
         "blacklisted": [],
         "current": [],
+        "check_time": 1800
     }
 
     def __init__(self, bot: Red):
@@ -202,6 +203,7 @@ class TournamentManager(commands.Cog):
         channels = await self.data.guild(guild).channels.all()
         participants = len(await self.data.guild(guild).current())
         blacklisted = len(await self.data.guild(guild).blacklisted())
+        check_time = await self.data.guild(guild).check_time()
         roles_description = ""
         channels_description = ""
         for key, role_id in roles.items():
@@ -221,9 +223,11 @@ class TournamentManager(commands.Cog):
         embed.description = "Réglages du module de gestion de tournois."
         embed.add_field(name="Rôles", value=roles_description, inline=False)
         embed.add_field(name="Channels", value=channels_description, inline=False)
+        embed.add_field(name="durée du check in", value=check_time, inline=False)
         embed.add_field(
             name="Participants", value=f"{participants} membres enregistrés", inline=True
         )
+
         embed.add_field(name="Blacklist", value=f"{blacklisted} membres blacklistés", inline=True)
         embed.set_footer(
             text=(
@@ -232,6 +236,15 @@ class TournamentManager(commands.Cog):
             )
         )
         await ctx.send(embed=embed)
+    @tournamentset.command(name="checkintime")
+    async def tournamentset_checkintime(self, ctx: commands.Context, duree: int):
+        """règle la durée du check in. Doit-être en minutes."""
+
+        if duree > 10080:
+            await ctx.send("durée trop longue. Doit être inferieur a 1 semaine.")
+            return
+        await self.data.guild(ctx.guild).check_time.set(duree * 60)
+        await ctx.send("durée reglée")
 
     @commands.group()
     @checks.admin()
@@ -482,9 +495,10 @@ class TournamentManager(commands.Cog):
     @checks.mod()
     async def startcheck(self, ctx: commands.Context):
         """
-        Démarre la phase de check pendant 30 minutes.
+        Démarre la phase de check pendant la durée définie.
         """
         guild = ctx.guild
+        check_time = await self.data.guild(ctx.guild).check_time()
         try:
             check_role = await self.get_checkin_role(guild)
             participant_role = await self.get_participant_role(guild)
@@ -508,7 +522,7 @@ class TournamentManager(commands.Cog):
                 await ctx.send("Annulation.")
                 return
             await message.delete()
-        n = CheckIn(self.bot, self.data, ctx, channel, check_role, participant_role)
+        n = CheckIn(self.bot, self.data, ctx, channel, check_role, participant_role, check_time)
         await n.run()
         try:
             await n.update_message_task
