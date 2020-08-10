@@ -344,7 +344,7 @@ class CheckIn(ProgressionMenu):
         embed = discord.Embed(title="Check-in")
         embed.description = f"Le check-in est en cours dans le channel {channel.mention}"
         embed.add_field(name="Progression", value="Démarrage dans 10 secondes.", inline=False)
-        embed.add_field(name="Temps restant", value="{0}m".format(check_time / 60), inline=False)
+        embed.add_field(name="Temps restant", value="{0}".format(timedelta(seconds=check_time)), inline=False)
         embed.set_footer(text="Cliquez sur ❌ pour annuler l'inscription.")
         embed.colour = 0x0033FF
         super().__init__(
