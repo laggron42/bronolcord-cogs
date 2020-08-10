@@ -236,7 +236,7 @@ class TournamentManager(commands.Cog):
             )
         )
         await ctx.send(embed=embed)
-
+        
     @tournamentset.command(name="checkintime")
     async def tournamentset_checkintime(self, ctx: commands.Context, duree: int):
         """règle la durée du check in. Doit-être en minutes."""
@@ -499,7 +499,6 @@ class TournamentManager(commands.Cog):
         Démarre la phase de check pendant la durée définie.
         """
         guild = ctx.guild
-        check_time = await self.data.guild(ctx.guild).check_time()
         try:
             check_role = await self.get_checkin_role(guild)
             participant_role = await self.get_participant_role(guild)
@@ -523,7 +522,7 @@ class TournamentManager(commands.Cog):
                 await ctx.send("Annulation.")
                 return
             await message.delete()
-        n = CheckIn(self.bot, self.data, ctx, channel, check_role, participant_role, check_time)
+        n = CheckIn(self.bot, self.data, ctx, channel, check_role, participant_role)
         await n.run()
         try:
             await n.update_message_task

@@ -354,7 +354,7 @@ class CheckIn(ProgressionMenu):
             len(participant_role.members),
             "joueurs check",
             wait_before_start=10,
-            time=check_time,
+            time=await self.data.guild(ctx.guild).check_time(),
         )
         self.data = data
         self.channel = channel
