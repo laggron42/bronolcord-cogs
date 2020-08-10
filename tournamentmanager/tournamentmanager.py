@@ -236,6 +236,7 @@ class TournamentManager(commands.Cog):
             )
         )
         await ctx.send(embed=embed)
+
     @tournamentset.command(name="checkintime")
     async def tournamentset_checkintime(self, ctx: commands.Context, duree: int):
         """règle la durée du check in. Doit-être en minutes."""
