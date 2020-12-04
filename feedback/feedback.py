@@ -11,11 +11,15 @@ from redbot.core.utils.tunnel import Tunnel
 if TYPE_CHECKING:
     from redbot.core.bot import Red
 
-GUILD_ID = 598541499608858634
+GUILD_ID = 598541499608858634  # Super Smash Bronol
+ROLE_ID = 762819547564474388  # PK Staff
 
 
 def check(ctx: commands.Context):
-    return ctx.guild is None or ctx.guild.id == GUILD_ID
+    bronolcord = ctx.bot.get_guild(GUILD_ID)
+    role = bronolcord.get_role(ROLE_ID)
+    member = bronolcord.get_member(ctx.author)
+    return role in member.roles
 
 
 class Feedback(commands.Cog):
@@ -38,7 +42,6 @@ class Feedback(commands.Cog):
         await ctx.tick()
 
     @commands.command()
-    @commands.cooldown(1, 60, commands.BucketType.user)
     async def feedback(self, ctx: commands.Context, *, content: str):
         """
         Envoyez un feedback anonyme pour le staff du serveur de Bronol.
