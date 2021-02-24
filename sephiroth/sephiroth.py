@@ -156,7 +156,7 @@ class Sephiroth(commands.Cog):
             task = self.bot.loop.run_in_executor(None, self.make_video, b, ctx.author.id)
             try:
                 await asyncio.wait_for(task, timeout=60)
-            except (asyncio.TimeoutError, TypeError):
+            except (asyncio.TimeoutError, TypeError, ValueError):
                 return await ctx.send(
                     "Cette image est trop large ou bien le format n'est pas supporté."
                 )
